@@ -5,7 +5,7 @@ import os
 base_dir = os.path.dirname(os.path.abspath(__file__))
 
 # Binding
-bind = "127.0.0.1:5000"
+bind = "127.0.0.1:8000"
 
 # Workers
 workers = multiprocessing.cpu_count() * 2 + 1
