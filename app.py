@@ -182,17 +182,13 @@ def generate_csv():
             'https://www.beefitswhatsfordinner.com/recipes'
         ]
 
-        # Add timestamp to filename to prevent overwrites
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f'labelledData_{timestamp}.csv'
-
         # Ensure data directory exists
         data_dir = './data'
         os.makedirs(data_dir, exist_ok=True)
 
         # Create timestamped filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        new_filename = f'labelledData_{timestamp}.csv'
+        new_filename = f'labelledData.csv'
         new_file_path = os.path.join(data_dir, new_filename)
         current_file_path = os.path.join(data_dir, 'labelledData.csv')
 
