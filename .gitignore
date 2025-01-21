@@ -1,0 +1,67 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Flask-specific
+instance/
+*.sqlite3
+*.db
+.env
+*.env
+
+# Virtual environment
+ENV/
+env/
+.venv/
+env.bak/
+env.bak/
+
+# Logs
+*.log
+*.out
+*.err
+logs/
+logging/
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# PyCharm
+.idea/
+
+# VSCode
+.vscode/
+
+# macOS system files
+.DS_Store
+
+# Windows system files
+Thumbs.db
+Desktop.ini
+
+# Deployment
+*.bak
+*.swp
+*.old
+
+# Docker
+docker-compose.override.yml
+*.dockerignore
+
+# Cache
+*.egg-info/
+dist/
+build/
+pip-wheel-metadata/
