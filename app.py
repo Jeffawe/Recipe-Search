@@ -1,5 +1,4 @@
 import shutil
-
 from flask import Flask, request, jsonify
 import pandas as pd
 from python.recipe_matcher import HybridRecipeMatcher
@@ -208,7 +207,7 @@ def generate_csv():
 
         return jsonify({
             "status": "success",
-            "filename": filename,
+            "filename": new_filename,
             "record_count": len(df),
             "timestamp": datetime.now().isoformat()
         })
