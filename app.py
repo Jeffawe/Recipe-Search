@@ -147,7 +147,7 @@ def search():
 
     try:
         df = load_data()
-        recipe_features = df[['url', 'title', 'keywords']].to_dict('records')
+        recipe_features = df[['url', 'title', 'keywords', 'main_image_url']].to_dict('records')
 
         matcher = HybridRecipeMatcher()
         threshold_value = data.get('threshold', 0.3)
