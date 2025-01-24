@@ -109,6 +109,11 @@ def error_handler(f):
 
     return wrapper
 
+@app.route('/')
+def home():
+    return 'Welcome to Recipe Search!'
+
+
 @app.route('/health', methods=['GET'])
 @error_handler
 def health_check():
