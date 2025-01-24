@@ -46,8 +46,7 @@ def load_data(force_reload: bool = False) -> pd.DataFrame:
             df_cache['data'] = pd.read_csv(
                 csv_path,
                 na_filter=False,
-                encoding='utf-8',
-                encoding_errors='ignore'
+                encoding='utf-8'
             )
             df_cache['last_updated'] = current_time
             logger.info("Data reloaded from CSV")
