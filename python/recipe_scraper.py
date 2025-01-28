@@ -21,16 +21,6 @@ def prepare_features(features):
     df = pd.DataFrame(features, index=[0])
     prepared_features = df.drop(['url', 'title', 'keywords', 'main_image_url'], axis=1)
 
-    # # Make sure columns match training data
-    # expected_columns = [
-    #     'cooking_verb_count', 'measurement_term_count', 'nutrition_term_count',
-    #     'number_count', 'time_mentions', 'temperature_mentions', 'list_count',
-    #     'image_count', 'total_text_length', 'has_schema_recipe',
-    #     'recipe_class_indicators', 'list_text_ratio', 'has_print_button',
-    #     'has_servings', 'title_contains_recipe', 'meta_description_contains_recipe',
-    #     'category_mentions', 'link_to_text_ratio', 'url_is_generic'
-    # ]
-
     # Return DataFrame with columns in correct order
     return prepared_features
 
@@ -199,7 +189,7 @@ class RecipeCrawler:
 
         return features
 
-    def crawl_page(self, url, external=False):
+    def crawl_page(self, url, visited_urls, external=False):
         """Crawl a single page and extract features."""
         if external:
             if url in self.visited_urls:
@@ -212,10 +202,14 @@ class RecipeCrawler:
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, 'html.parser')
                 text_content = soup.get_text(separator=' ', strip=True).lower()
-                if len(soup.find_all('a', href=True)) / len(text_content.split()) > 0.5:
-                    return None, []
 
-                features = self.extract_features(soup, url)
+                # Avoid crawling pages that are mostly links
+                if len(soup.find_all('a', href=True)) / len(text_content.split()) > 0.5:
+                    return None, []  # Skip pages with too many links
+
+                features = None
+                if url not in visited_urls:
+                    features = self.extract_features(soup, url)
 
                 # Find all links on the page
                 links = []
@@ -233,17 +227,16 @@ class RecipeCrawler:
         return None, []
 
     def crawl_sites(self, start_urls, visited_urls, train=True, max_pages=100, max_depth=3, delay=1):
-        all_visited_urls = set(self.visited_urls).union(set(visited_urls))
         urls_to_visit = [(url, 0) for url in start_urls]  # Start with depth 0
 
         while urls_to_visit and len(self.visited_urls) < max_pages:
             url, depth = urls_to_visit.pop(0)
 
-            if depth > max_depth or url in all_visited_urls:
+            if depth > max_depth or url in self.visited_urls:
                 continue
 
             print(f"Visiting: {url} (Depth: {depth})")
-            features, new_urls = self.crawl_page(url)
+            features, new_urls = self.crawl_page(url, visited_urls)
 
             if features:
                 if not train and is_recipe_site(features):

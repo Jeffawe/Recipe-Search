@@ -9,6 +9,8 @@ instance/
 *.db
 .env
 *.env
+data/recipesocial.json
+
 
 # Virtual environment
 ENV/

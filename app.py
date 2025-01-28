@@ -1,15 +1,20 @@
-import shutil
+import os
 from flask import Flask, request, jsonify
-import pandas as pd
-from python.recipe_matcher import HybridRecipeMatcher
-from python.recipe_scraper import RecipeCrawler
+from datetime import datetime
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
 import logging
 from functools import wraps
 import traceback
-from typing import Optional, TypedDict
-import os
-from datetime import datetime
-from platform import system
+from typing import List
+from python.recipe_matcher import HybridRecipeMatcher
+from python.recipe_scraper import RecipeCrawler
+from dotenv import load_dotenv
+import psycopg2
+from psycopg2.extras import RealDictCursor
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(
@@ -20,77 +25,92 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
+
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-## Define the type structure for our cache
-class DataCache(TypedDict):
-    data: Optional[pd.DataFrame]
-    last_updated: Optional[datetime]
+conn = psycopg2.connect(os.environ["DATABASE_URL"])
 
-# Initialize the cache with proper typing
-df_cache: DataCache = {
-    'data': None,
-    'last_updated': None
-}
+with conn.cursor() as cur:
+    cur.execute("SELECT now()")
+    res = cur.fetchall()
+    conn.commit()
+    print(res)
 
-def load_data(force_reload: bool = False) -> pd.DataFrame:
-    """Load data from CSV with caching mechanism."""
-    current_time = datetime.now()
-    csv_path = os.path.join('./data', 'labelledData.csv')
+# Google Sheets Configuration
+SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly']
+SERVICE_ACCOUNT_FILE = './data/recipesocial.json'  # Update this path
+SPREADSHEET_ID = os.getenv('SPREADSHEET_ID')
+RANGE_NAME = 'URL!A1:A'
 
-    if (df_cache['data'] is None or force_reload or
-        (df_cache['last_updated'] and (current_time - df_cache['last_updated']).seconds > 3600)):
-        try:
-            df_cache['data'] = pd.read_csv(
-                csv_path,
-                na_filter=False,
-                encoding='utf-8'
-            )
-            df_cache['last_updated'] = current_time
-            logger.info("Data reloaded from CSV")
-        except Exception as e:
-            logger.error(f"Error loading CSV: {str(e)}")
-            raise
+def create_tables():
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS recipes (
+                url VARCHAR PRIMARY KEY,
+                title VARCHAR,
+                keywords TEXT,
+                main_image_url VARCHAR,
+                cooking_verb_count INT,
+                measurement_term_count INT,
+                nutrition_term_count INT,
+                number_count INT,
+                time_mentions INT,
+                temperature_mentions INT,
+                list_count INT,
+                image_count INT,
+                total_text_length INT,
+                has_schema_recipe INT,
+                has_print_button INT,
+                has_servings INT,
+                title_contains_recipe INT,
+                meta_description_contains_recipe INT,
+                recipe_class_indicators INT,
+                category_mentions INT,
+                list_text_ratio FLOAT,
+                link_to_text_ratio FLOAT,
+                abandon_value FLOAT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        conn.commit()
 
-    return df_cache['data']
-
-def update_data_file(new_file_path: str, current_file_path: str) -> bool:
-    """
-    Updates the current data file using symlink on Linux and copy on Windows.
-    Returns True if successful, False if failed.
-    """
+def get_google_sheets_urls() -> List[str]:
+    """Fetch URLs from Google Sheets."""
     try:
-        # Remove existing file/symlink if it exists
-        if os.path.exists(current_file_path):
-            if os.path.islink(current_file_path):
-                os.unlink(current_file_path)
-            else:
-                os.remove(current_file_path)
+        credentials = service_account.Credentials.from_service_account_file(
+            SERVICE_ACCOUNT_FILE, scopes=SCOPES)
 
-        # Use symlink on Linux, copy on Windows
-        if system().lower() == 'windows':
-            shutil.copy2(new_file_path, current_file_path)
-            logger.info("Windows system: Created file copy")
-        else:
-            # Create relative symlink from within data directory
-            relative_target = os.path.basename(new_file_path)
-            os.symlink(relative_target, current_file_path)
-            logger.info("Unix system: Created symlink")
-        return True
+        service = build('sheets', 'v4', credentials=credentials)
+        sheet = service.spreadsheets()
+        result = sheet.values().get(spreadsheetId=SPREADSHEET_ID,
+                                    range=RANGE_NAME).execute()
+        values = result.get('values', [])
+
+        if not values:
+            logger.warning('No data found in Google Sheet')
+            return []
+
+        # Flatten the list and remove empty strings
+        urls = [url[0] for url in values if url and url[0].strip()]
+        return urls
 
     except Exception as e:
-        logger.error(f"Failed to update data file: {e}")
-        # Last resort: try to copy if everything else fails
-        try:
-            shutil.copy2(new_file_path, current_file_path)
-            logger.info("Fallback: Created file copy after error")
-            return True
-        except Exception as copy_error:
-            logger.error(f"Failed to create backup copy: {copy_error}")
-            return False
+        logger.error(f"Error fetching URLs from Google Sheets: {str(e)}")
+        raise
 
+
+def load_data() -> List[dict]:
+    """Load data from database."""
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        try:
+            cur.execute("SELECT * FROM recipes")
+            rows = cur.fetchall()
+            return rows  # Returns a list of dictionaries, each row is a recipe
+        except Exception as e:
+            logger.error(f"Error loading from database: {str(e)}")
+            raise
 
 def error_handler(f):
     """Decorator for consistent error handling."""
@@ -108,23 +128,83 @@ def error_handler(f):
 
     return wrapper
 
+
 @app.route('/')
 def home():
     return 'Welcome to Recipe Search!'
+
+@app.route('/create_table', methods=['POST'])
+@error_handler
+def create_table():
+    """Create the table if it does not exist."""
+    try:
+        with conn.cursor() as cur:
+            create_table_query = """
+                CREATE TABLE IF NOT EXISTS recipes (
+                    url VARCHAR PRIMARY KEY,
+                    title VARCHAR,
+                    keywords TEXT,
+                    main_image_url VARCHAR,
+                    cooking_verb_count INTEGER,
+                    measurement_term_count INTEGER,
+                    nutrition_term_count INTEGER,
+                    number_count INTEGER,
+                    time_mentions INTEGER,
+                    temperature_mentions INTEGER,
+                    list_count INTEGER,
+                    image_count INTEGER,
+                    total_text_length INTEGER,
+                    has_schema_recipe INTEGER,
+                    has_print_button INTEGER,
+                    has_servings INTEGER,
+                    title_contains_recipe INTEGER,
+                    meta_description_contains_recipe INTEGER,
+                    recipe_class_indicators INTEGER,
+                    category_mentions INTEGER,
+                    list_text_ratio FLOAT,
+                    link_to_text_ratio FLOAT,
+                    abandon_value FLOAT,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+            """
+            cur.execute(create_table_query)
+            conn.commit()
+        return jsonify({"status": "success", "message": "Table created successfully."})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/drop_table', methods=['POST'])
+@error_handler
+def drop_table():
+    """Drop the table if it exists."""
+    try:
+        with conn.cursor() as cur:
+            drop_table_query = "DROP TABLE IF EXISTS recipes"
+            cur.execute(drop_table_query)
+            conn.commit()
+        return jsonify({"status": "success", "message": "Table dropped successfully."})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 @app.route('/health', methods=['GET'])
 @error_handler
 def health_check():
-    """Enhanced health check endpoint."""
+    """Health check endpoint."""
     try:
-        # Test database access
-        df = load_data()
+        # Open a new connection and create a cursor
+        with conn.cursor() as cur:
+            # Perform a simple query to check if the connection is active
+            cur.execute("SELECT COUNT(*) FROM recipes")
+            recipe_count = cur.fetchone()[0]  # Fetch the count result
+
         return jsonify({
             "status": "healthy",
-            "database_records": len(df),
-            "last_updated": df_cache['last_updated'].isoformat() if df_cache['last_updated'] else None
+            "database_records": recipe_count,
+            "database_connection": "active"
         })
+
     except Exception as e:
         return jsonify({
             "status": "unhealthy",
@@ -135,20 +215,14 @@ def health_check():
 @app.route('/search/recipe', methods=['POST'])
 @error_handler
 def search():
-    """Enhanced search endpoint with input validation and error handling."""
+    """Search endpoint."""
     data = request.get_json()
 
-    # Input validation
-    if not data:
-        return jsonify({'error': 'No JSON data provided'}), 400
-
-    if 'search_data' not in data or not data['search_data']:
+    if not data or 'search_data' not in data:
         return jsonify({'error': 'search_data field is required'}), 400
 
     try:
-        df = load_data()
-        recipe_features = df[['url', 'title', 'keywords', 'main_image_url']].to_dict('records')
-
+        recipe_features = load_data()
         matcher = HybridRecipeMatcher()
         threshold_value = data.get('threshold', 0.3)
 
@@ -167,62 +241,82 @@ def search():
         })
 
     except Exception as e:
-        logger.error(f"Search error: {str(e)}\n{traceback.format_exc()}")
-        return jsonify({'error': 'Search operation failed', 'message': str(e)}), 500
+        logger.error(f"Search error: {str(e)}")
+        raise
 
 
 @app.route('/search/create', methods=['POST'])
 @error_handler
-def generate_csv():
-    """Enhanced CSV generation endpoint with progress tracking."""
+def generate_recipes():
+    """Generate recipes from URLs in Google Sheet."""
     try:
-        crawler = RecipeCrawler()
-        urls = [
-            'https://www.allrecipes.com',
-            'https://www.foodnetwork.com/recipes',
-            'https://www.simplyrecipes.com',
-            'https://damndelicious.net',
-            'https://www.beefitswhatsfordinner.com/recipes'
-        ]
+        # Fetch URLs from Google Sheets
+        urls = get_google_sheets_urls()
 
-        # Ensure data directory exists
-        data_dir = './data'
-        os.makedirs(data_dir, exist_ok=True)
-
-        # Create timestamped filename
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        new_filename = f'labelledData.csv'
-        new_file_path = os.path.join(data_dir, new_filename)
-        current_file_path = os.path.join(data_dir, 'labelledData.csv')
-
-        # Crawl and save to new file
-        df = crawler.crawl_sites(urls, [], False, max_pages=500)
-        df.to_csv(new_file_path, index=False)
-
-        # Update the current data file
-        if not update_data_file(new_file_path, current_file_path):
+        if not urls:
             return jsonify({
-                'error': 'Failed to update data file',
-                'message': 'Could not create symlink or copy'
-            }), 500
+                'error': 'No URLs found in Google Sheet',
+                'message': 'Please add URLs to the specified Google Sheet'
+            }), 400
 
-        # Force reload of data cache
-        load_data(force_reload=True)
+        # Crawl recipes
+        visited_urls = [recipe['url'] for recipe in load_data()]
+        crawler = RecipeCrawler()
+        df = crawler.crawl_sites(urls, visited_urls, False, max_pages=500)
+
+        # Upsert data into database (replace ORM insert with raw SQL)
+        for _, row in df.iterrows():
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                               INSERT INTO recipes (url, title, keywords, main_image_url, cooking_verb_count,
+                                                    measurement_term_count, nutrition_term_count, number_count,
+                                                    time_mentions, temperature_mentions, list_count, image_count,
+                                                    total_text_length, has_schema_recipe, has_print_button, has_servings,
+                                                    title_contains_recipe, meta_description_contains_recipe,
+                                                    recipe_class_indicators, list_text_ratio, link_to_text_ratio,
+                                                    category_mentions, abandon_value)
+                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                               ON CONFLICT (url) 
+                               DO UPDATE SET title = EXCLUDED.title,
+                                             keywords = EXCLUDED.keywords,
+                                             main_image_url = EXCLUDED.main_image_url,
+                                             cooking_verb_count = EXCLUDED.cooking_verb_count,
+                                             measurement_term_count = EXCLUDED.measurement_term_count,
+                                             nutrition_term_count = EXCLUDED.nutrition_term_count,
+                                             number_count = EXCLUDED.number_count,
+                                             time_mentions = EXCLUDED.time_mentions,
+                                             temperature_mentions = EXCLUDED.temperature_mentions,
+                                             list_count = EXCLUDED.list_count,
+                                             image_count = EXCLUDED.image_count,
+                                             total_text_length = EXCLUDED.total_text_length,
+                                             has_schema_recipe = EXCLUDED.has_schema_recipe,
+                                             has_print_button = EXCLUDED.has_print_button,
+                                             has_servings = EXCLUDED.has_servings,
+                                             title_contains_recipe = EXCLUDED.title_contains_recipe,
+                                             meta_description_contains_recipe = EXCLUDED.meta_description_contains_recipe,
+                                             recipe_class_indicators = EXCLUDED.recipe_class_indicators,
+                                             list_text_ratio = EXCLUDED.list_text_ratio,
+                                             link_to_text_ratio = EXCLUDED.link_to_text_ratio,
+                                             category_mentions = EXCLUDED.category_mentions,
+                                             abandon_value = EXCLUDED.abandon_value
+                           """, tuple(row[col] for col in df.columns))
+                conn.commit()
+
+            except Exception as e:
+                logger.error(f"Error processing URL {row['url']}: {e}")
+                conn.rollback()
 
         return jsonify({
             "status": "success",
-            "filename": new_filename,
-            "record_count": len(df),
             "timestamp": datetime.now().isoformat()
         })
 
     except Exception as e:
-        logger.error(f"CSV generation error: {str(e)}\n{traceback.format_exc()}")
-        return jsonify({
-            'error': 'CSV generation failed',
-            'message': str(e)
-        }), 500
-
+        logger.error(f"Recipe generation error: {str(e)}")
+        raise
+    finally:
+        logger.debug("Finished")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
