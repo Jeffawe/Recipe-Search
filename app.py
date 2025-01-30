@@ -176,6 +176,10 @@ def health_check():
     finally:
         conn.close()
 
+@app.route('/')
+def home():
+    return 'Welcome to Recipe Search!'
+
 
 @app.route('/search/recipe', methods=['POST'])
 @error_handler
