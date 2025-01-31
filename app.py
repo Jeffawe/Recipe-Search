@@ -12,6 +12,8 @@ from python.recipe_scraper import RecipeCrawler
 from dotenv import load_dotenv
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from math import ceil
+from functools import lru_cache
 
 # Load environment variables from .env file
 load_dotenv()
@@ -180,6 +182,9 @@ def health_check():
 def home():
     return 'Welcome to Recipe Search!'
 
+@lru_cache(maxsize=1)
+def get_recipe_features():
+    return load_data()
 
 @app.route('/search/recipe', methods=['POST'])
 @error_handler
@@ -191,20 +196,38 @@ def search():
         return jsonify({'error': 'search_data field is required'}), 400
 
     try:
-        recipe_features = load_data()
+        recipe_features = get_recipe_features()
         matcher = HybridRecipeMatcher()
         threshold_value = data.get('threshold', 0.3)
 
         if not isinstance(threshold_value, (int, float)) or not 0 <= threshold_value <= 1:
             return jsonify({'error': 'threshold must be a number between 0 and 1'}), 400
 
+        # Get pagination parameters
+        page = int(data.get('page', 1))
+        limit = int(data.get('limit', 10))
+
+        if page < 1 or limit < 1:
+            return jsonify({'error': 'Page and limit must be positive integers'}), 400
+
+
         results = matcher.search(recipe_features, data['search_data'], threshold=threshold_value)
 
+        # Pagination logic
+        total_results = len(results)
+        total_pages = ceil(total_results / limit)
+        start_idx = (page - 1) * limit
+        end_idx = start_idx + limit
+        paginated_results = results[start_idx:end_idx]
+
         return jsonify({
-            "results": results,
+            "results": paginated_results,
             "metadata": {
+                "page": page,
+                "limit": limit,
+                "total_results": total_results,
+                "total_pages": total_pages,
                 "threshold": threshold_value,
-                "total_matches": len(results),
                 "timestamp": datetime.now().isoformat()
             }
         })
