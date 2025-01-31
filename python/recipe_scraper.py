@@ -226,7 +226,7 @@ class RecipeCrawler:
 
         return None, []
 
-    def crawl_sites(self, start_urls, visited_urls, train=True, max_pages=100, max_depth=3, delay=1):
+    def crawl_sites(self, start_urls, visited_urls, train=True, max_pages=200, max_depth=5, delay=2):
         urls_to_visit = [(url, 0) for url in start_urls]  # Start with depth 0
 
         while urls_to_visit and len(self.visited_urls) < max_pages:
