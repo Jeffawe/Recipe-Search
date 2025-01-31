@@ -203,12 +203,16 @@ class RecipeCrawler:
                 soup = BeautifulSoup(response.text, 'html.parser')
                 text_content = soup.get_text(separator=' ', strip=True).lower()
 
-                # Avoid crawling pages that are mostly links
-                if len(soup.find_all('a', href=True)) / len(text_content.split()) > 0.5:
-                    return None, []  # Skip pages with too many links
-
                 features = None
-                if url not in visited_urls:
+
+                # Get all links and words only if needed
+                total_links = len(soup.find_all('a', href=True))
+                total_words = len(text_content.split())
+
+                # Avoid crawling pages that are mostly links
+                if total_words == 0 or (total_links / total_words) > 0.5:
+                    features = None  # Skip pages with too many links
+                elif url not in visited_urls:
                     features = self.extract_features(soup, url)
 
                 # Find all links on the page
