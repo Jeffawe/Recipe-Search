@@ -252,7 +252,10 @@ class LightweightMatcher:
         scores = []
         for row in urls_data:
             keywords = set(row['keywords'].split(','))
-            match_score = len(search_terms & keywords) / len(search_terms)
+            if len(search_terms) == 0:
+                match_score = 0.0  # or handle this case as needed
+            else:
+                match_score = len(search_terms & keywords) / len(search_terms)
             scores.append({
                 'url': row['url'],
                 'title': row['title'],
