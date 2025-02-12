@@ -251,7 +251,7 @@ def generate_recipes():
 
         visited_urls = [recipe['url'] for recipe in load_data()]
         crawler = RecipeCrawler()
-        df = crawler.crawl_sites(urls, visited_urls, False, max_pages=500)
+        df = crawler.crawl_sites(urls, visited_urls, False, max_pages=5000)
 
         for _, row in df.iterrows():
             conn = get_db_connection()

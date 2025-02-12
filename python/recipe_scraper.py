@@ -25,7 +25,10 @@ def prepare_features(features):
     return prepared_features
 
 
-def is_recipe_site(features):
+def is_recipe_site(features, url):
+    if re.search(r'/recipe(s?)/', url, re.IGNORECASE):
+        return True
+
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
     model_path = os.path.join(SCRIPT_DIR, 'trained_pipeline.joblib')
     loaded_pipeline = load(model_path)
@@ -230,7 +233,7 @@ class RecipeCrawler:
 
         return None, []
 
-    def crawl_sites(self, start_urls, visited_urls, train=True, max_pages=200, max_depth=5, delay=2):
+    def crawl_sites(self, start_urls, visited_urls, train=True, max_pages=200, max_depth=20, delay=2):
         urls_to_visit = [(url, 0) for url in start_urls]  # Start with depth 0
 
         while urls_to_visit and len(self.visited_urls) < max_pages:
@@ -243,7 +246,7 @@ class RecipeCrawler:
             features, new_urls = self.crawl_page(url, visited_urls)
 
             if features:
-                if not train and is_recipe_site(features):
+                if not train and is_recipe_site(features, url):
                     self.features_data.append(features)
 
             self.visited_urls.add(url)  # Mark as visited
