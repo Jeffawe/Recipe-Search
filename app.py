@@ -14,6 +14,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from math import ceil
 from functools import lru_cache
+import requests
 
 # Load environment variables from .env file
 load_dotenv()
@@ -41,6 +42,14 @@ SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly']
 SERVICE_ACCOUNT_FILE = './data/recipesocial.json'
 SPREADSHEET_ID = os.getenv('SPREADSHEET_ID')
 RANGE_NAME = 'URL!A1:A'
+
+DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL')
+
+def send_discord_message(content):
+    try:
+        requests.post(DISCORD_WEBHOOK_URL, json={"content": content})
+    except Exception as e:
+        logger.error(f"Failed to send Discord message: {e}")
 
 def get_google_sheets_urls() -> List[str]:
     """Fetch URLs from Google Sheets."""
@@ -294,6 +303,7 @@ def search():
 def generate_recipes():
     """Generate recipes from URLs in Google Sheet."""
     try:
+        send_discord_message("🚀 Recipe generation has started...")
         urls = get_google_sheets_urls()
         if not urls:
             return jsonify({
@@ -346,9 +356,11 @@ def generate_recipes():
                     conn.commit()
             except Exception as e:
                 logger.error(f"Error processing URL {row['url']}: {e}")
+                send_discord_message(f"❌ Error during recipe generation: {str(e)}")
                 conn.rollback()
             finally:
                 conn.close()
+                send_discord_message(f"✅ Recipe generation finished successfully at {datetime.now().isoformat()}")
 
         return jsonify({"status": "success", "timestamp": datetime.now().isoformat()})
     except Exception as e:
