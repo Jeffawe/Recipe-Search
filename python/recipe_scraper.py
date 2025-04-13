@@ -7,14 +7,7 @@ import re
 import json
 from joblib import load
 import os
-from sklearn.preprocessing import LabelEncoder
-from sklearn.model_selection import cross_val_score
-from sklearn.pipeline import Pipeline
-import numpy as np
-from sklearn.ensemble import VotingClassifier, RandomForestClassifier
-from xgboost import XGBClassifier
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
 
 def prepare_features(features):
     # Create a DataFrame with a single row
@@ -233,6 +226,38 @@ class RecipeCrawler:
 
         return None, []
 
+    def score_recipe_page(self, row):
+        """Calculate recipe score based on weighted features."""
+        score = 0
+
+        # Strong indicators
+        score += row['has_schema_recipe'] * 20
+        score += row['title_contains_recipe'] * 15
+        score += row['meta_description_contains_recipe'] * 10
+
+        # Content indicators
+        score += min(row['measurement_term_count'] * 2, 30)  # Cap at 30 points
+        score += min(row['cooking_verb_count'] * 1.5, 20)
+        score += min(row['list_count'] * 3, 15)
+        score += min(row['image_count'] * 0.5, 10)
+
+        # Ratio indicators
+        score += row['list_text_ratio'] * 10  # Higher ratio = more likely recipe
+
+        # Negative indicators
+        if row['total_text_length'] > 10000:
+            score -= 10  # Very long pages less likely to be recipes
+
+        return score
+
+    def classify_recipe(self, features, threshold=50):
+        """Classify a single page based on features."""
+        score = self.score_recipe_page(features)
+        is_recipe = 1 if score >= threshold else 0
+        features['recipe_score'] = score
+        features['is_recipe'] = is_recipe
+        return features
+
     def crawl_sites(self, start_urls, visited_urls, train=True, max_pages=200, max_depth=20, delay=2):
         urls_to_visit = [(url, 0) for url in start_urls]  # Start with depth 0
 
@@ -246,7 +271,10 @@ class RecipeCrawler:
             features, new_urls = self.crawl_page(url, visited_urls)
 
             if features:
-                if not train and is_recipe_site(features, url):
+                if train:
+                    features = self.classify_recipe(features)
+                    self.features_data.append(features)
+                elif is_recipe_site(features, url):
                     self.features_data.append(features)
 
             self.visited_urls.add(url)  # Mark as visited

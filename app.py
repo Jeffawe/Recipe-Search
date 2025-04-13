@@ -38,7 +38,7 @@ def get_db_connection():
 
 # Google Sheets Configuration
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly']
-SERVICE_ACCOUNT_FILE = './data/recipesocial.json'  # Update this path
+SERVICE_ACCOUNT_FILE = './data/recipesocial.json'
 SPREADSHEET_ID = os.getenv('SPREADSHEET_ID')
 RANGE_NAME = 'URL!A1:A'
 
@@ -95,6 +95,58 @@ def error_handler(f):
             }), 500
 
     return wrapper
+
+
+@app.route('/increment/abandon_value', methods=['POST'])
+@error_handler
+def increment_abandon_value():
+    """Increment the abandon_value by 1 for a specific URL."""
+    data = request.get_json()
+
+    if not data or 'url' not in data:
+        return jsonify({
+            "status": "error",
+            "message": "Missing required field: url"
+        }), 400
+
+    url = data.get('url')
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            # First check if the URL exists
+            cur.execute("SELECT url, abandon_value FROM recipes WHERE url = %s", (url,))
+            existing = cur.fetchone()
+
+            if not existing:
+                return jsonify({
+                    "status": "error",
+                    "message": f"URL not found: {url}"
+                }), 404
+
+            # Increment the abandon_value by 1
+            cur.execute("""
+                UPDATE recipes
+                SET abandon_value = COALESCE(abandon_value, 0) + 1
+                WHERE url = %s
+                RETURNING url, abandon_value
+            """, (url,))
+
+            result = cur.fetchone()
+            conn.commit()
+
+            return jsonify({
+                "status": "success",
+                "url": result[0],
+                "abandon_value": result[1]
+            })
+
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Error incrementing abandon_value: {str(e)}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        conn.close()
 
 @app.route('/create_table', methods=['POST'])
 @error_handler
@@ -251,14 +303,14 @@ def generate_recipes():
 
         visited_urls = [recipe['url'] for recipe in load_data()]
         crawler = RecipeCrawler()
-        df = crawler.crawl_sites(urls, visited_urls, False, max_pages=5000)
+        df = crawler.crawl_sites(urls, visited_urls, False, max_pages=1000000)
 
         for _, row in df.iterrows():
             conn = get_db_connection()
             try:
                 with conn.cursor() as cur:
                     cur.execute("""
-                        INSERT INTO recipes (
+                        INSERT INTO recipes (                   
                             url, title, keywords, main_image_url, cooking_verb_count,
                             measurement_term_count, nutrition_term_count, number_count,
                             time_mentions, temperature_mentions, list_count, image_count,
