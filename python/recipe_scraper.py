@@ -8,6 +8,24 @@ import json
 from joblib import load
 import os
 from sklearn.feature_extraction.text import TfidfVectorizer
+from dotenv import load_dotenv
+import logging
+
+load_dotenv()
+
+DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL')
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('app.log'),
+        logging.StreamHandler()
+    ]
+)
+
+logger = logging.getLogger(__name__)
 
 def prepare_features(features):
     # Create a DataFrame with a single row
@@ -261,6 +279,23 @@ class RecipeCrawler:
     def crawl_sites(self, start_urls, visited_urls, train=True, max_pages=200, max_depth=20, delay=2):
         urls_to_visit = [(url, 0) for url in start_urls]  # Start with depth 0
 
+        # For progress tracking
+        total_urls = len(start_urls)
+        processed_count = 0
+        last_reported_percentage = 0
+
+        # Discord reporting function
+        def send_progress_update(percent):
+            try:
+                message = f"🔄 Recipe crawler progress: {percent}% complete ({processed_count}/{total_urls} URLs)"
+                requests.post(DISCORD_WEBHOOK_URL, json={"content": message})
+                print(f"Progress update sent to Discord: {percent}%")
+            except Exception as e:
+                print(f"Failed to send Discord progress update: {e}")
+
+        # Initial update
+        send_progress_update(0)
+
         while urls_to_visit and len(self.visited_urls) < max_pages:
             url, depth = urls_to_visit.pop(0)
 
@@ -280,6 +315,18 @@ class RecipeCrawler:
             self.visited_urls.add(url)  # Mark as visited
             urls_to_visit.extend([(new_url, depth + 1) for new_url in new_urls if new_url not in self.visited_urls])
 
+            # Update progress tracking
+            processed_count += 1
+            current_percentage = int((processed_count / total_urls) * 100)
+
+            # Send Discord update every 20% progress
+            if current_percentage >= last_reported_percentage + 20:
+                last_reported_percentage = current_percentage - (current_percentage % 20)  # Round to nearest 20%
+                send_progress_update(last_reported_percentage)
+
             time.sleep(delay)  # Add delay between requests
+
+        # Final update
+        send_progress_update(100)
 
         return pd.DataFrame(self.features_data).set_index('url', drop=False)

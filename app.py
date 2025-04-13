@@ -8,13 +8,13 @@ from functools import wraps
 import traceback
 from typing import List
 from python.recipe_matcher import HybridRecipeMatcher
-from python.recipe_scraper import RecipeCrawler
 from dotenv import load_dotenv
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from math import ceil
 from functools import lru_cache
 import requests
+import subprocess
 
 # Load environment variables from .env file
 load_dotenv()
@@ -74,7 +74,6 @@ def get_google_sheets_urls() -> List[str]:
     except Exception as e:
         logger.error(f"Error fetching URLs from Google Sheets: {str(e)}")
         raise
-
 
 def load_data() -> List[dict]:
     """Load data from database."""
@@ -300,72 +299,21 @@ def search():
 
 @app.route('/search/create', methods=['POST'])
 @error_handler
-def generate_recipes():
-    """Generate recipes from URLs in Google Sheet."""
+def start_scraper():
     try:
-        send_discord_message("🚀 Recipe generation has started...")
-        urls = get_google_sheets_urls()
-        if not urls:
-            return jsonify({
-                'error': 'No URLs found in Google Sheet',
-                'message': 'Please add URLs to the specified Google Sheet'
-            }), 400
-
-        visited_urls = [recipe['url'] for recipe in load_data()]
-        crawler = RecipeCrawler()
-        df = crawler.crawl_sites(urls, visited_urls, False, max_pages=1000000)
-
-        for _, row in df.iterrows():
-            conn = get_db_connection()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        INSERT INTO recipes (                   
-                            url, title, keywords, main_image_url, cooking_verb_count,
-                            measurement_term_count, nutrition_term_count, number_count,
-                            time_mentions, temperature_mentions, list_count, image_count,
-                            total_text_length, has_schema_recipe, has_print_button, has_servings,
-                            title_contains_recipe, meta_description_contains_recipe,
-                            recipe_class_indicators, list_text_ratio, link_to_text_ratio,
-                            category_mentions, abandon_value
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (url) DO UPDATE SET
-                            title = EXCLUDED.title,
-                            keywords = EXCLUDED.keywords,
-                            main_image_url = EXCLUDED.main_image_url,
-                            cooking_verb_count = EXCLUDED.cooking_verb_count,
-                            measurement_term_count = EXCLUDED.measurement_term_count,
-                            nutrition_term_count = EXCLUDED.nutrition_term_count,
-                            number_count = EXCLUDED.number_count,
-                            time_mentions = EXCLUDED.time_mentions,
-                            temperature_mentions = EXCLUDED.temperature_mentions,
-                            list_count = EXCLUDED.list_count,
-                            image_count = EXCLUDED.image_count,
-                            total_text_length = EXCLUDED.total_text_length,
-                            has_schema_recipe = EXCLUDED.has_schema_recipe,
-                            has_print_button = EXCLUDED.has_print_button,
-                            has_servings = EXCLUDED.has_servings,
-                            title_contains_recipe = EXCLUDED.title_contains_recipe,
-                            meta_description_contains_recipe = EXCLUDED.meta_description_contains_recipe,
-                            recipe_class_indicators = EXCLUDED.recipe_class_indicators,
-                            list_text_ratio = EXCLUDED.list_text_ratio,
-                            link_to_text_ratio = EXCLUDED.link_to_text_ratio,
-                            category_mentions = EXCLUDED.category_mentions,
-                            abandon_value = EXCLUDED.abandon_value
-                    """, tuple(row[col] for col in df.columns))
-                    conn.commit()
-            except Exception as e:
-                logger.error(f"Error processing URL {row['url']}: {e}")
-                send_discord_message(f"❌ Error during recipe generation: {str(e)}")
-                conn.rollback()
-            finally:
-                conn.close()
-                send_discord_message(f"✅ Recipe generation finished successfully at {datetime.now().isoformat()}")
-
-        return jsonify({"status": "success", "timestamp": datetime.now().isoformat()})
+        script_path = os.path.join(os.path.dirname(__file__), 'run_scraper.py')
+        # Use subprocess.Popen with proper environment
+        process = subprocess.Popen(
+            ['python3', script_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        # Log the process ID for tracking
+        app.logger.info(f"Scraper started with PID: {process.pid}")
+        return jsonify({'status': 'Scraper started in background', 'pid': process.pid}), 202
     except Exception as e:
-        logger.error(f"Recipe generation error: {str(e)}")
-        raise
+        app.logger.error(f"Failed to start scraper: {str(e)}")
+        return jsonify({'status': 'error', 'message': f"Failed to start scraper: {str(e)}"}), 500
 
 
 if __name__ == "__main__":
