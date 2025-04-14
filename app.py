@@ -302,12 +302,20 @@ def search():
 def start_scraper():
     try:
         script_path = os.path.join(os.path.dirname(__file__), 'run_scraper.py')
-        # Use subprocess.Popen with proper environment
+
+        # Open files for output redirection
+        stdout_file = open('scraper_output.log', 'a')
+        stderr_file = open('scraper_error.log', 'a')
+
+        # Use subprocess.Popen with detachment settings
         process = subprocess.Popen(
             ['python3', script_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
+            stdout=stdout_file,
+            stderr=stderr_file,
+            close_fds=True,
+            start_new_session=True  # This is key for detaching
         )
+
         # Log the process ID for tracking
         app.logger.info(f"Scraper started with PID: {process.pid}")
         return jsonify({'status': 'Scraper started in background', 'pid': process.pid}), 202
