@@ -319,7 +319,7 @@ class RecipeCrawler:
             processed_count += 1
 
             # Send Discord update every 20% progress
-            if processed_count & 100 == 0:
+            if processed_count % 100 == 0:
                 send_progress_update(processed_count)
 
             time.sleep(delay)  # Add delay between requests
