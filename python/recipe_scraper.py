@@ -287,7 +287,7 @@ class RecipeCrawler:
         # Discord reporting function
         def send_progress_update(percent):
             try:
-                message = f"🔄 Recipe crawler progress: {percent}% complete ({processed_count}/{total_urls} URLs)"
+                message = f"🔄 Recipe crawler progress: {percent}% URLs checked)"
                 requests.post(DISCORD_WEBHOOK_URL, json={"content": message})
                 print(f"Progress update sent to Discord: {percent}%")
             except Exception as e:
@@ -317,12 +317,10 @@ class RecipeCrawler:
 
             # Update progress tracking
             processed_count += 1
-            current_percentage = int((processed_count / total_urls) * 100)
 
             # Send Discord update every 20% progress
-            if current_percentage >= last_reported_percentage + 20:
-                last_reported_percentage = current_percentage - (current_percentage % 20)  # Round to nearest 20%
-                send_progress_update(last_reported_percentage)
+            if processed_count & 100 == 0:
+                send_progress_update(processed_count)
 
             time.sleep(delay)  # Add delay between requests
 
