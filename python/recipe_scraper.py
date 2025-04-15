@@ -41,7 +41,7 @@ def get_db_connection():
 def prepare_features(features):
     # Create a DataFrame with a single row
     df = pd.DataFrame(features, index=[0])
-    prepared_features = df.drop(['url', 'title', 'keywords', 'main_image_url'], axis=1)
+    prepared_features = df.drop(['url', 'title', 'keywords', 'main_image_url', 'abandon_value'], axis=1)
     # Return DataFrame with columns in correct order
     return prepared_features
 
