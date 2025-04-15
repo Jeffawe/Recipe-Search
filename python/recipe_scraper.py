@@ -7,10 +7,15 @@ import re
 import json
 from joblib import load
 import os
-from sklearn.feature_extraction.text import TfidfVectorizer
 from dotenv import load_dotenv
 import logging
+import psycopg2
+from psycopg2.extras import execute_batch
+import signal
+import pickle
+from datetime import datetime
 
+# Load environment variables
 load_dotenv()
 
 DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL')
@@ -27,11 +32,16 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+
+def get_db_connection():
+    """Create and return a new database connection."""
+    return psycopg2.connect(os.environ["DATABASE_URL"])
+
+
 def prepare_features(features):
     # Create a DataFrame with a single row
     df = pd.DataFrame(features, index=[0])
     prepared_features = df.drop(['url', 'title', 'keywords', 'main_image_url'], axis=1)
-
     # Return DataFrame with columns in correct order
     return prepared_features
 
@@ -45,14 +55,12 @@ def is_recipe_site(features, url):
     loaded_pipeline = load(model_path)
     prepared_features = prepare_features(features)
     value = loaded_pipeline.predict(prepared_features)
-    if value[0] == 0:
-        return False
-    else:
-        return True
+    return value[0] == 1
 
 
 class RecipeCrawler:
-    def __init__(self):
+    def __init__(self, batch_size=100, checkpoint_interval=1000):
+        # Cooking and measurement terms
         self.cooking_verbs = {'bake', 'boil', 'broil', 'chop', 'cook', 'dice', 'fry', 'grate', 'grill', 'mince', 'mix',
                               'peel', 'roast', 'simmer', 'slice', 'stir', 'whisk'}
 
@@ -65,21 +73,43 @@ class RecipeCrawler:
             'User-Agent': 'Recipe-Collector-Bot/1.0 (Educational Purpose)'
         }
 
+        # Batch processing parameters
+        self.batch_size = batch_size
+        self.checkpoint_interval = checkpoint_interval
+
+        # State tracking
         self.visited_urls = set()
-        self.features_data = []
+        self.feature_batch = []
+        self.batch_counter = 0
+        self.total_processed = 0
+
+        # For clean shutdown
+        self.running = True
+        signal.signal(signal.SIGINT, self.handle_shutdown)
+        signal.signal(signal.SIGTERM, self.handle_shutdown)
+
+        # Checkpoint file
+        self.checkpoint_file = 'crawler_checkpoint.pkl'
+
+        # Import TF-IDF later to save memory when not needed
+        from sklearn.feature_extraction.text import TfidfVectorizer
         self.tfidf = TfidfVectorizer(
             stop_words='english',
-            ngram_range=(1, 2),  # Consider both unigrams and bigrams
+            ngram_range=(1, 2),
             max_features=5000
         )
+
+    def handle_shutdown(self, sig, frame):
+        """Handle graceful shutdown with CTRL+C"""
+        logger.info("Shutdown signal received, finishing current batch...")
+        self.running = False
+        self.save_checkpoint()
 
     def clean_text(self, text):
         """Clean and normalize text."""
         if not text:
             return ""
-        # Convert to lowercase and remove special characters
         text = re.sub(r'[^\w\s]', ' ', text.lower())
-        # Remove extra whitespace
         text = ' '.join(text.split())
         return text
 
@@ -108,7 +138,7 @@ class RecipeCrawler:
             important_terms.append(feature_names[idx])
 
         # Add title words and ingredients as additional keywords
-        title_words = set(re.findall(r'\w+', title.lower()))
+        title_words = set(re.findall(r'\w+', title.lower())) if title else set()
         ingredient_words = set(word.lower() for ing in ingredients
                                for word in re.findall(r'\w+', ing))
 
@@ -116,8 +146,8 @@ class RecipeCrawler:
         all_keywords = set(important_terms) | title_words | ingredient_words
 
         return {
-            'title': title,
-            'keywords': ','.join(all_keywords),
+            'title': title or "",
+            'keywords': ','.join(list(all_keywords)[:100]),  # Limit keywords to avoid DB issues
         }
 
     def extract_features(self, soup, url):
@@ -174,9 +204,9 @@ class RecipeCrawler:
         # Extract features
         features = {
             'url': url,
-            'title': title,
-            'keywords': self.extract_keywords(soup)['keywords'],
-            'main_image_url': main_image_url,
+            'title': title[:255] if title else "",  # Limit title length for DB
+            'keywords': self.extract_keywords(soup)['keywords'][:1000] if soup else "",  # Limit keywords length
+            'main_image_url': main_image_url[:500] if main_image_url else "",  # Limit URL length
             'cooking_verb_count': sum(text_content.count(verb) for verb in self.cooking_verbs),
             'measurement_term_count': sum(text_content.count(term) for term in self.measurement_terms),
             'nutrition_term_count': sum(text_content.count(term) for term in self.nutrition_terms),
@@ -192,13 +222,14 @@ class RecipeCrawler:
             'list_text_ratio': len(list_items_text) / (len(text_content) if len(text_content) > 0 else 1),
             'has_print_button': 1 if soup.find('a', text=re.compile(r'print|save', re.I)) else 0,
             'has_servings': 1 if re.search(r'serves?|servings?|yield', text_content) else 0,
-            'title_contains_recipe': 1 if 'recipe' in title.lower() else 0,
+            'title_contains_recipe': 1 if title and 'recipe' in title.lower() else 0,
             'meta_description_contains_recipe': 1 if soup.find('meta', attrs={'name': 'description'}) and 'recipe' in
                                                      soup.find('meta', attrs={'name': 'description'})[
                                                          'content'].lower() else 0,
             'category_mentions': len(re.findall(r'dessert|appetizer|main course|breakfast|dinner', text_content)),
             'link_to_text_ratio': len(soup.find_all('a', href=True)) / (len(text_content) + 1),
-            'url_is_generic': 1 if re.search(r'/home|/categories|/recipes$', url) else 0
+            'url_is_generic': 1 if re.search(r'/home|/categories|/recipes$', url) else 0,
+            'abandon_value': 0  # Default value for abandon_value
         }
 
         return features
@@ -211,7 +242,8 @@ class RecipeCrawler:
 
         try:
             response = requests.get(url, headers=self.headers, timeout=10)
-            if not external: self.visited_urls.add(url)
+            if not external:
+                self.visited_urls.add(url)
 
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, 'html.parser')
@@ -239,92 +271,229 @@ class RecipeCrawler:
                 return features, links
 
         except Exception as e:
-            print(f"Error crawling {url}: {str(e)}")
+            logger.error(f"Error crawling {url}: {str(e)}")
             return None, []
 
         return None, []
 
-    def score_recipe_page(self, row):
-        """Calculate recipe score based on weighted features."""
-        score = 0
+    def save_batch_to_db(self):
+        """Save the current batch of features to the database."""
+        if not self.feature_batch:
+            return
 
-        # Strong indicators
-        score += row['has_schema_recipe'] * 20
-        score += row['title_contains_recipe'] * 15
-        score += row['meta_description_contains_recipe'] * 10
+        try:
+            conn = get_db_connection()
+            with conn.cursor() as cur:
+                # Use execute_batch for better performance
+                columns = list(self.feature_batch[0].keys())
+                values = [[row[col] for col in columns] for row in self.feature_batch]
 
-        # Content indicators
-        score += min(row['measurement_term_count'] * 2, 30)  # Cap at 30 points
-        score += min(row['cooking_verb_count'] * 1.5, 20)
-        score += min(row['list_count'] * 3, 15)
-        score += min(row['image_count'] * 0.5, 10)
+                # Create parameterized query
+                placeholders = ', '.join(['%s'] * len(columns))
+                columns_str = ', '.join(columns)
 
-        # Ratio indicators
-        score += row['list_text_ratio'] * 10  # Higher ratio = more likely recipe
+                # Create the ON CONFLICT portion dynamically
+                update_str = ', '.join([f"{col} = EXCLUDED.{col}" for col in columns if col != 'url'])
 
-        # Negative indicators
-        if row['total_text_length'] > 10000:
-            score -= 10  # Very long pages less likely to be recipes
+                query = f"""
+                    INSERT INTO recipes ({columns_str}) 
+                    VALUES ({placeholders})
+                    ON CONFLICT (url) DO UPDATE SET {update_str}
+                """
 
-        return score
+                # Execute batch insert
+                execute_batch(cur, query, values, page_size=100)
+                conn.commit()
 
-    def classify_recipe(self, features, threshold=50):
-        """Classify a single page based on features."""
-        score = self.score_recipe_page(features)
-        is_recipe = 1 if score >= threshold else 0
-        features['recipe_score'] = score
-        features['is_recipe'] = is_recipe
-        return features
+            logger.info(f"Saved batch of {len(self.feature_batch)} recipes to database")
+            self.feature_batch = []  # Clear the batch after saving
+        except Exception as e:
+            logger.error(f"Error saving batch to database: {str(e)}")
+            # Don't clear the batch to allow for retry
+        finally:
+            if conn:
+                conn.close()
 
-    def crawl_sites(self, start_urls, visited_urls, train=True, max_pages=200, max_depth=20, delay=2):
-        urls_to_visit = [(url, 0) for url in start_urls]  # Start with depth 0
+    def save_checkpoint(self):
+        """Save crawler state to a checkpoint file."""
+        checkpoint = {
+            'visited_urls': self.visited_urls,
+            'total_processed': self.total_processed,
+            'timestamp': datetime.now().isoformat()
+        }
+
+        try:
+            with open(self.checkpoint_file, 'wb') as f:
+                pickle.dump(checkpoint, f)
+            logger.info(f"Checkpoint saved: {self.total_processed} URLs processed")
+
+            # Send notification to Discord
+            try:
+                requests.post(DISCORD_WEBHOOK_URL, json={
+                    "content": f"📊 Crawler checkpoint saved: {self.total_processed} URLs processed"
+                })
+            except Exception as e:
+                logger.error(f"Failed to send Discord checkpoint notification: {e}")
+
+        except Exception as e:
+            logger.error(f"Failed to save checkpoint: {e}")
+
+    def load_checkpoint(self):
+        """Load crawler state from checkpoint file if it exists."""
+        if os.path.exists(self.checkpoint_file):
+            try:
+                with open(self.checkpoint_file, 'rb') as f:
+                    checkpoint = pickle.load(f)
+                self.visited_urls = checkpoint['visited_urls']
+                self.total_processed = checkpoint['total_processed']
+                logger.info(f"Loaded checkpoint: {self.total_processed} URLs previously processed")
+                return True
+            except Exception as e:
+                logger.error(f"Failed to load checkpoint: {e}")
+        return False
+
+    def send_progress_update(self, message):
+        """Send a progress update to Discord."""
+        try:
+            requests.post(DISCORD_WEBHOOK_URL, json={"content": message})
+            logger.info(f"Progress update sent to Discord: {message}")
+        except Exception as e:
+            logger.error(f"Failed to send Discord progress update: {e}")
+
+    def get_domain(self, url):
+        """Extract domain from URL for domain-based rate limiting."""
+        try:
+            from urllib.parse import urlparse
+            parsed_url = urlparse(url)
+            return parsed_url.netloc
+        except Exception:
+            return url
+
+    def crawl_sites(self, start_urls, visited_urls, train=False, max_pages=1000000, max_depth=10, delay=1):
+        """
+        Crawl websites from start_urls and find recipe pages.
+
+        Parameters:
+        - start_urls: List of URLs to start crawling from
+        - visited_urls: URLs already processed in previous runs
+        - train: Whether to classify recipes for training
+        - max_pages: Maximum number of pages to crawl
+        - max_depth: Maximum crawl depth
+        - delay: Base delay between requests
+        """
+        # Load checkpoint if available
+        checkpoint_loaded = self.load_checkpoint()
+
+        # Initialize the queue with start URLs
+        urls_to_visit = [(url, 0) for url in start_urls if url not in self.visited_urls]  # Start with depth 0
+
+        # Skip URLs we've already visited if checkpoint loaded
+        if checkpoint_loaded:
+            urls_to_visit = [(url, depth) for url, depth in urls_to_visit if url not in self.visited_urls]
+
+        # For domain-based rate limiting
+        domain_last_access = {}
 
         # For progress tracking
-        total_urls = len(start_urls)
-        processed_count = 0
-        last_reported_percentage = 0
+        start_time = time.time()
+        last_report_time = start_time
 
-        # Discord reporting function
-        def send_progress_update(percent):
-            try:
-                message = f"🔄 Recipe crawler progress: {percent}% URLs checked)"
-                requests.post(DISCORD_WEBHOOK_URL, json={"content": message})
-                print(f"Progress update sent to Discord: {percent}%")
-            except Exception as e:
-                print(f"Failed to send Discord progress update: {e}")
+        # Send initial update
+        self.send_progress_update(f"🚀 Starting crawler with {len(urls_to_visit)} URLs in queue")
 
-        # Initial update
-        send_progress_update(0)
+        try:
+            while urls_to_visit and len(self.visited_urls) < max_pages and self.running:
+                # Get next URL and its depth
+                url, depth = urls_to_visit.pop(0)
 
-        while urls_to_visit and len(self.visited_urls) < max_pages:
-            url, depth = urls_to_visit.pop(0)
+                # Skip if too deep or already visited
+                if depth > max_depth or url in self.visited_urls:
+                    continue
 
-            if depth > max_depth or url in self.visited_urls:
-                continue
+                # Domain-based rate limiting to be nice to servers
+                current_domain = self.get_domain(url)
+                if current_domain in domain_last_access:
+                    time_since_last = time.time() - domain_last_access[current_domain]
+                    if time_since_last < delay * 2:  # Add extra delay for same domain
+                        sleep_time = delay * 2 - time_since_last
+                        if sleep_time > 0:
+                            time.sleep(sleep_time)
 
-            print(f"Visiting: {url} (Depth: {depth})")
-            features, new_urls = self.crawl_page(url, visited_urls)
+                domain_last_access[current_domain] = time.time()
 
-            if features:
-                if train:
-                    features = self.classify_recipe(features)
-                    self.features_data.append(features)
-                elif is_recipe_site(features, url):
-                    self.features_data.append(features)
+                # Process URL
+                logger.info(f"Visiting: {url} (Depth: {depth}, Queue: {len(urls_to_visit)})")
+                features, new_urls = self.crawl_page(url, visited_urls)
 
-            self.visited_urls.add(url)  # Mark as visited
-            urls_to_visit.extend([(new_url, depth + 1) for new_url in new_urls if new_url not in self.visited_urls])
+                # If we found valid features
+                if features:
+                    if train:
+                        # For training data collection
+                        self.feature_batch.append(features)
+                    elif is_recipe_site(features, url):
+                        # For production - only save recipes
+                        self.feature_batch.append(features)
+                        logger.info(f"Found recipe: {url}")
 
-            # Update progress tracking
-            processed_count += 1
+                # Mark as visited and add new URLs to queue
+                self.visited_urls.add(url)
+                self.total_processed += 1
 
-            # Send Discord update every 20% progress
-            if processed_count % 100 == 0:
-                send_progress_update(processed_count)
+                # Add new URLs to the queue (avoiding already visited ones)
+                filtered_urls = [(u, depth + 1) for u in new_urls
+                                 if u not in self.visited_urls and
+                                 u not in [url for url, _ in urls_to_visit]]
+                urls_to_visit.extend(filtered_urls[:100])  # Limit number of URLs added per page
 
-            time.sleep(delay)  # Add delay between requests
+                # Save batch if it reaches batch size
+                self.batch_counter += 1
+                if len(self.feature_batch) >= self.batch_size:
+                    self.save_batch_to_db()
 
-        # Final update
-        send_progress_update(100)
+                # Create checkpoint at regular intervals
+                if self.total_processed % self.checkpoint_interval == 0:
+                    self.save_checkpoint()
 
-        return pd.DataFrame(self.features_data).set_index('url', drop=False)
+                # Report progress at regular intervals
+                current_time = time.time()
+                if current_time - last_report_time > 300:  # Report every 5 minutes
+                    elapsed = current_time - start_time
+                    rate = self.total_processed / elapsed if elapsed > 0 else 0
+                    estimated_remaining = (max_pages - self.total_processed) / rate if rate > 0 else "unknown"
+
+                    progress_msg = (
+                        f"🔄 Progress: {self.total_processed}/{max_pages} pages processed\n"
+                        f"⏱️ Rate: {rate:.2f} pages/second\n"
+                        f"⏳ Est. remaining time: {estimated_remaining if isinstance(estimated_remaining, str) else f'{estimated_remaining / 3600:.1f} hours'}\n"
+                        f"🗂️ Queue size: {len(urls_to_visit)}"
+                    )
+                    self.send_progress_update(progress_msg)
+                    last_report_time = current_time
+
+                # Basic rate limiting
+                time.sleep(delay)
+
+        except KeyboardInterrupt:
+            logger.info("Keyboard interrupt received, saving progress...")
+        except Exception as e:
+            logger.error(f"Error during crawling: {str(e)}")
+            self.send_progress_update(f"❌ Crawler error: {str(e)}")
+        finally:
+            # Save any remaining recipes
+            if self.feature_batch:
+                self.save_batch_to_db()
+
+            # Save final checkpoint
+            self.save_checkpoint()
+
+            # Final report
+            total_time = time.time() - start_time
+            rate = self.total_processed / total_time if total_time > 0 else 0
+            final_msg = (
+                f"✅ Crawler finished: {self.total_processed} URLs processed\n"
+                f"⏱️ Total time: {total_time / 3600:.2f} hours\n"
+                f"📊 Average rate: {rate:.2f} pages/second"
+            )
+            self.send_progress_update(final_msg)
+
+        return self.total_processed

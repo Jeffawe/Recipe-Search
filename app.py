@@ -301,15 +301,16 @@ def search():
 @error_handler
 def start_scraper():
     try:
-        script_path = os.path.join(os.path.dirname(__file__), 'run_scraper.py')
+        # Path to the batch manager script
+        script_path = os.path.join(os.path.dirname(__file__), 'batch_manager.py')
 
         # Open files for output redirection
-        stdout_file = open('scraper_output.log', 'a')
-        stderr_file = open('scraper_error.log', 'a')
+        stdout_file = open('batch_manager_output.log', 'a')
+        stderr_file = open('batch_manager_error.log', 'a')
 
         # Use subprocess.Popen with detachment settings
         process = subprocess.Popen(
-            ['python3', script_path],
+            ['python3', script_path, '--mode=run'],  # This will run pending batches
             stdout=stdout_file,
             stderr=stderr_file,
             close_fds=True,
@@ -317,12 +318,37 @@ def start_scraper():
         )
 
         # Log the process ID for tracking
-        app.logger.info(f"Scraper started with PID: {process.pid}")
-        return jsonify({'status': 'Scraper started in background', 'pid': process.pid}), 202
+        app.logger.info(f"Batch manager started with PID: {process.pid}")
+        return jsonify({'status': 'Batch manager started in background', 'pid': process.pid}), 202
     except Exception as e:
-        app.logger.error(f"Failed to start scraper: {str(e)}")
-        return jsonify({'status': 'error', 'message': f"Failed to start scraper: {str(e)}"}), 500
+        app.logger.error(f"Failed to start batch manager: {str(e)}")
+        return jsonify({'status': 'error', 'message': f"Failed to start batch manager: {str(e)}"}), 500
 
+
+@app.route('/search/create_batches', methods=['POST'])
+@error_handler
+def create_batches():
+    try:
+        # Path to the batch manager script
+        script_path = os.path.join(os.path.dirname(__file__), 'batch_manager.py')
+
+        # Get batch size from request or use default
+        batch_size = request.json.get('batch_size', 20)
+
+        # Use subprocess.run for synchronous execution
+        result = subprocess.run(
+            ['python3', script_path, '--mode=create', f'--batch-size={batch_size}'],
+            capture_output=True,
+            text=True
+        )
+
+        if result.returncode == 0:
+            return jsonify({'status': 'Batches created successfully', 'output': result.stdout}), 200
+        else:
+            return jsonify({'status': 'error', 'message': result.stderr}), 500
+    except Exception as e:
+        app.logger.error(f"Failed to create batches: {str(e)}")
+        return jsonify({'status': 'error', 'message': f"Failed to create batches: {str(e)}"}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
