@@ -218,6 +218,7 @@ def main():
                         help='Maximum crawl depth')
 
     args = parser.parse_args()
+    print(args)
 
     if args.mode == 'create':
         # Create new batches from Google Sheets
@@ -299,5 +300,5 @@ def main():
                     # Add small delay between batches
                     time.sleep(5)
 
-    if __name__ == "__main__":
-        main()
+if __name__ == "__main__":
+    main()
