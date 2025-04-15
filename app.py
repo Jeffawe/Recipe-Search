@@ -350,5 +350,23 @@ def create_batches():
         app.logger.error(f"Failed to create batches: {str(e)}")
         return jsonify({'status': 'error', 'message': f"Failed to create batches: {str(e)}"}), 500
 
+
+@app.route('/search/test_discord', methods=['GET'])
+@error_handler
+def test_discord():
+    try:
+        webhook_url = os.getenv('DISCORD_WEBHOOK_URL')
+        if not webhook_url:
+            return jsonify({'status': 'error', 'message': 'DISCORD_WEBHOOK_URL not configured'}), 500
+
+        response = requests.post(webhook_url, json={"content": "🧪 Testing Discord webhook from web application"})
+        return jsonify({
+            'status': 'success',
+            'discord_response_code': response.status_code,
+            'discord_response': response.text
+        }), 200
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': f"Discord test failed: {str(e)}"}), 500
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
