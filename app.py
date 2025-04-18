@@ -15,6 +15,9 @@ from math import ceil
 from functools import lru_cache
 import requests
 import subprocess
+import signal
+import psutil
+import os
 
 # Load environment variables from .env file
 load_dotenv()
@@ -317,6 +320,11 @@ def start_scraper():
             start_new_session=True  # This is key for detaching
         )
 
+        # Store the PID for later termination
+        pid_file_path = os.path.join(os.path.dirname(__file__), 'batch_manager_pids.txt')
+        with open(pid_file_path, 'a') as pid_file:
+            pid_file.write(f"{process.pid}\n")
+
         # Log the process ID for tracking
         app.logger.info(f"Batch manager started with PID: {process.pid}")
         return jsonify({'status': 'Batch manager started in background', 'pid': process.pid}), 202
@@ -352,6 +360,99 @@ def create_batches():
         app.logger.error(f"Failed to create batches: {str(e)}")
         return jsonify({'status': 'error', 'message': f"Failed to create batches: {str(e)}"}), 500
 
+
+@app.route('/search/stop', methods=['POST'])
+@error_handler
+def stop_all_batches():
+    try:
+        # Check for a PID file or other tracking mechanism
+        batch_pids = []
+
+        # 1. Check if we have a PID file
+        pid_file_path = os.path.join(os.path.dirname(__file__), 'batch_manager_pids.txt')
+        if os.path.exists(pid_file_path):
+            with open(pid_file_path, 'r') as pid_file:
+                for line in pid_file:
+                    try:
+                        pid = int(line.strip())
+                        batch_pids.append(pid)
+                    except ValueError:
+                        continue
+
+        # 2. Look for processes with batch_manager.py in the command line
+        killed_count = 0
+        batch_processes = []
+
+        # Get running batch manager processes
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                cmdline = proc.info['cmdline']
+                if cmdline and any('batch_manager.py' in cmd for cmd in cmdline if cmd):
+                    batch_processes.append(proc)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+        # Kill the processes
+        for proc in batch_processes:
+            try:
+                proc.terminate()  # Try graceful termination first
+                killed_count += 1
+                app.logger.info(f"Terminated batch process with PID: {proc.pid}")
+            except Exception as e:
+                app.logger.error(f"Failed to terminate process {proc.pid}: {str(e)}")
+                try:
+                    # Force kill if termination fails
+                    proc.kill()
+                    killed_count += 1
+                    app.logger.info(f"Force killed batch process with PID: {proc.pid}")
+                except Exception as e2:
+                    app.logger.error(f"Failed to kill process {proc.pid}: {str(e2)}")
+
+        # 3. Clean up PID file
+        if os.path.exists(pid_file_path):
+            os.remove(pid_file_path)
+
+        # 4. Mark all pending batches as cancelled
+        batch_dir = os.path.join(os.path.dirname(__file__), 'batches')
+        cancelled_batches = 0
+
+        if os.path.exists(batch_dir):
+            import json
+            from datetime import datetime
+
+            for filename in os.listdir(batch_dir):
+                if filename.startswith("batch_") and filename.endswith(".json"):
+                    batch_path = os.path.join(batch_dir, filename)
+                    try:
+                        with open(batch_path, "r") as f:
+                            batch_data = json.load(f)
+
+                        if batch_data["status"] == "pending":
+                            batch_data["status"] = "cancelled"
+                            batch_data["cancelled_at"] = datetime.now().isoformat()
+
+                            with open(batch_path, "w") as f:
+                                json.dump(batch_data, f)
+
+                            cancelled_batches += 1
+                    except Exception as e:
+                        app.logger.error(f"Error updating batch file {filename}: {str(e)}")
+
+        # Send notification to Discord if webhook is available
+        try:
+            send_discord_message(f"🛑 Batch processing stopped: killed {killed_count} processes, cancelled {cancelled_batches} pending batches")
+        except Exception as e:
+            app.logger.error(f"Failed to send Discord notification: {str(e)}")
+
+        return jsonify({
+            'status': 'success',
+            'message': f'Stopped all batch processes ({killed_count} processes terminated, {cancelled_batches} batches cancelled)'
+        }), 200
+
+    except Exception as e:
+        send_discord_message(f"Failed to stop batch processes: {str(e)}")
+        app.logger.error(f"Failed to stop batch processes: {str(e)}")
+        return jsonify({'status': 'error', 'message': f"Failed to stop batch processes: {str(e)}"}), 500
 
 @app.route('/search/test_discord', methods=['GET'])
 @error_handler
