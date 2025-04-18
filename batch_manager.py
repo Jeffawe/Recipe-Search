@@ -212,7 +212,7 @@ def main():
     parser.add_argument('--batch-size', type=int, default=20,
                         help='Number of seed URLs per batch (for create mode)')
     parser.add_argument('--batch-id', type=int, help='Specific batch ID to run (for run mode)')
-    parser.add_argument('--max-pages', type=int, default=5000,
+    parser.add_argument('--max-pages', type=int, default=100000,
                         help='Maximum pages to crawl per batch')
     parser.add_argument('--max-depth', type=int, default=5,
                         help='Maximum crawl depth')

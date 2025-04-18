@@ -335,9 +335,11 @@ def create_batches():
         # Get batch size from request or use default
         batch_size = request.json.get('batch_size', 20)
 
+        max_pages = request.json.get('max-pages', 100000)
+
         # Use subprocess.run for synchronous execution
         result = subprocess.run(
-            ['python3', script_path, '--mode=create', f'--batch-size={batch_size}'],
+            ['python3', script_path, '--mode=create', f'--batch-size={batch_size}', f'--max-pages={max_pages}'],
             capture_output=True,
             text=True
         )

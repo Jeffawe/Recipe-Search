@@ -15,6 +15,8 @@ import signal
 import pickle
 from datetime import datetime
 
+from app import send_discord_message
+
 # Load environment variables
 load_dotenv()
 
@@ -306,9 +308,11 @@ class RecipeCrawler:
                 conn.commit()
 
             logger.info(f"Saved batch of {len(self.feature_batch)} recipes to database")
+            send_discord_message(f"Saved batch of {len(self.feature_batch)} recipes to database")
             self.feature_batch = []  # Clear the batch after saving
         except Exception as e:
             logger.error(f"Error saving batch to database: {str(e)}")
+            send_discord_message(f"Error saving batch to database: {str(e)}")
             # Don't clear the batch to allow for retry
         finally:
             if conn:
