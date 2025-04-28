@@ -1,6 +1,6 @@
 # Recipe-Search
 
-**Recipe-Search** is the backend service for the Recipe Search website. It is built with **Flask** and integrates a custom **machine learning model** and **natural language processing** techniques to search and retrieve recipes from the internet.
+**Recipe-Search** is the backend service for the [Recipe Social](https://recipe-social.vercel.app) website. It is built with **Flask** and integrates a custom **machine learning model** and **natural language processing** techniques to search and retrieve recipes from the internet.
 
 This backend is designed to:
 
