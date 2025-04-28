@@ -20,8 +20,6 @@ The Flask server provides API endpoints that interact with a trained ML model an
 - Save the finalised recipe data into a Supabase Postgresql database.
 - Allow for easy query-based recipe matching to easily find recipes 
 
-The system ensures that only high-quality and structured recipes are stored, filtering out irrelevant or noisy data.
-
 ---
 
 ## Machine Learning and NLP
