@@ -31,11 +31,7 @@ The Flask server provides API endpoints that interact with a trained ML model an
 
 - **Natural Language Processing:**
   - **Library:** [spaCy](https://spacy.io/)
-  - **Purpose:** To process and clean the text, extract key entities (like ingredients and steps), and improve the structure and consistency of the recipe data.
-  - **Applications:** 
-    - Ingredient extraction
-    - Step normalization
-    - Noise reduction in scraped content
+  - **Purpose:** To process and clean the text, extract key entities (like ingredients and steps), and allow for easy query-based recipe matching.
 
 ---
 
